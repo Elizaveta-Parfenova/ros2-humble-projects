@@ -32,7 +32,7 @@ class TurtleBotEnv(Node, gym.Env):
         self.current_yaw = 0.0
         self.obstacles = []
         self.prev_distance = None
-        self.max_steps = 10000
+        self.max_steps = 5000
         self.steps = 0 
         
         self.action_space = spaces.Discrete(3)  
@@ -87,7 +87,7 @@ class TurtleBotEnv(Node, gym.Env):
         
         rclpy.spin_once(self, timeout_sec=0.1) 
         self.publisher_.publish(cmd_msg)
-        
+    
     
         self.steps += 1
         
@@ -108,7 +108,7 @@ class TurtleBotEnv(Node, gym.Env):
         done = False
         if obstacle_detected:
             reward -= 50
-            done = True
+            done = False
         elif distance < 0.2:
             reward += 1000
             done = True
@@ -117,6 +117,9 @@ class TurtleBotEnv(Node, gym.Env):
             done = True
         else:
             done = False
+        
+        reward = reward / 1000.0 
+        # print(state)
 
         return state, reward, done, {}
 
