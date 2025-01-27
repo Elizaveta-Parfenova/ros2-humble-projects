@@ -4,45 +4,30 @@ import tensorflow as tf
 from tensorflow.keras import layers
 import rclpy
 from my_turtlebot_package.turtlebot_env import TurtleBotEnv
+from my_turtlebot_package.actor_net import ImprovedActor
+from my_turtlebot_package.critic_net import ImprovedCritic
 
+# --- Класс агента PPO ---
 class PPOAgent:
     def __init__(self, env):
         self.env = env
         self.state_dim = env.observation_space.shape[0]
         self.action_dim = env.action_space.n
 
-        # Коэффициент дисконтирования
-        self.gamma = 0.99 
-        # Параметр для клиппинга
-        self.epsilon = 0.2 
-        # Скорость обучения
+        # Коэффициенты
+        self.gamma = 0.99  # коэффициент дисконтирования
+        self.epsilon = 0.2  # параметр клиппинга
         self.actor_lr = 0.0003
-        self.critic_lr = 0.0001
+        self.critic_lr = 0.0003
         self.gaelam = 0.95
 
-        # Создаем модели и оптимизаторы
-        self.actor = self.build_actor()
-        self.critic = self.build_critic()
+        # Модели
+        self.actor = ImprovedActor(self.state_dim, self.action_dim)
+        self.critic = ImprovedCritic(self.state_dim)
+
+        # Оптимизаторы
         self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=self.actor_lr)
         self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=self.critic_lr)
-
-    # Модель актора
-    def build_actor(self):
-        return tf.keras.Sequential([
-            layers.Input(shape=(self.state_dim,)),
-            layers.Dense(128, activation='relu'),
-            layers.Dense(128, activation='relu'),
-            layers.Dense(self.action_dim, activation='softmax')
-        ])
-
-    # Модель критика
-    def build_critic(self):
-        return tf.keras.Sequential([
-            layers.Input(shape=(self.state_dim,)),
-            layers.Dense(128, activation='relu'),
-            layers.Dense(128, activation='relu'),
-            layers.Dense(1)
-        ])
 
     # Выбор действия и его вероятность
     def get_action(self, state):
@@ -52,8 +37,8 @@ class PPOAgent:
         prob = np.nan_to_num(prob, nan=1.0/self.action_dim)
         prob /= np.sum(prob)
         action = np.random.choice(self.action_dim, p=prob)
-        if not np.isclose(np.sum(prob), 1.0):
-            print("Warning: Probabilities do not sum to 1!", prob)
+        # if not np.isclose(np.sum(prob), 1.0):
+        #     print("Warning: Probabilities do not sum to 1!", prob)
         return action, prob
 
     # Вычисление преимущесвт и возврата
@@ -84,8 +69,8 @@ class PPOAgent:
 
             # Вычисление ошибки предсказания
             delta = rewards[t] + self.gamma * next_value * (1 - next_done) - values[t]
-            if np.isnan(delta):
-                print(f"NaN in delta: rewards[{t}]={rewards[t]}, next_value={next_value}, values[{t}]={values[t]}")
+            # if np.isnan(delta):
+            #     print(f"NaN in delta: rewards[{t}]={rewards[t]}, next_value={next_value}, values[{t}]={values[t]}")
             advantages[t] = last_gae = delta + self.gamma * self.gaelam * (1 - next_done) * last_gae
         # print('Advanteges:', advantages)
     # Возвраты для обновления критика
@@ -96,7 +81,7 @@ class PPOAgent:
     
     # Обновление политик
     def update(self, states, actions, advantages, returns, old_probs):
-        states = tf.convert_to_tensor(states, dtype=tf.float32)
+        # states = tf.convert_to_tensor(states, dtype=tf.float32)
         actions = tf.convert_to_tensor(actions, dtype=tf.int32)
         advantages = tf.convert_to_tensor(advantages, dtype=tf.float32)
         returns = tf.convert_to_tensor(returns, dtype=tf.float32)
@@ -129,7 +114,7 @@ class PPOAgent:
             values = tf.squeeze(self.critic(states))
             # print(values)
             # Рассчитываем потерю критика
-            critic_loss = tf.reduce_mean(tf.square(returns - values))
+            critic_loss = tf.keras.losses.Huber()(returns, values)
 
         critic_grads = tape.gradient(critic_loss, self.critic.trainable_variables)
         # clipped_gradients = [tf.clip_by_norm(g, 1.0) for g in critic_grads]
@@ -138,7 +123,6 @@ class PPOAgent:
     def train(self, max_episodes=500, batch_size=32):
         all_rewards = []
         
-
         for episode in range(max_episodes):
             state = np.reshape(self.env.reset(), [1, self.state_dim])
             episode_reward = 0
