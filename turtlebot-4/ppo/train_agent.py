@@ -114,7 +114,7 @@ class PPOAgent:
 
         with tf.GradientTape() as tape:
             # Получаем значения из критика
-            values = tf.squeeze(self.critic.evaluate_with_rrt(self.env.obstacles, states, TARGET_X, TARGET_Y))
+            values = tf.squeeze(self.critic.evaluate_with_rrt(self.env.current_yaw, self.env.obstacles, states, TARGET_X, TARGET_Y))
             # print(values)
             # Рассчитываем потерю критика
             critic_loss = tf.keras.losses.Huber()(returns, values)
@@ -145,8 +145,8 @@ class PPOAgent:
                 # print(next_state)
                 # print(self.goal)
                 # print(self.obstacles)
-                value = self.critic.evaluate_with_rrt(self.env.obstacles, state, TARGET_X, TARGET_Y)[0, 0]
-                print(value)
+                value = self.critic.evaluate_with_rrt(self.env.current_yaw, self.env.obstacles, state, TARGET_X, TARGET_Y)[0, 0]
+                # print(value)
 
                 states.append(state)
                 actions.append(action)
@@ -160,7 +160,7 @@ class PPOAgent:
                 # print(episode_reward)
                 
                 # if len(states) >= batch_size:
-            next_value = self.critic.evaluate_with_rrt(self.env.obstacles, next_state, TARGET_X, TARGET_Y)[0, 0]
+            next_value = self.critic.evaluate_with_rrt(self.env.current_yaw, self.env.obstacles, next_state, TARGET_X, TARGET_Y)[0, 0]
             values.append(next_value)
             # print(values)
             advantages, returns = self.compute_advantages(rewards, values, dones)

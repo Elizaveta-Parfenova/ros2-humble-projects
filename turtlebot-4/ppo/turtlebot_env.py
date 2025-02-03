@@ -58,9 +58,16 @@ class TurtleBotEnv(Node, gym.Env):
         cosy_cosp = 1.0 - 2.0 * (orientation_q.y * orientation_q.y + orientation_q.z * orientation_q.z)
         self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
 
-    def scan_callback(self, msg):
-        self.obstacles = [r if not math.isinf(r) and not math.isnan(r) and msg.range_min < r < msg.range_max else msg.range_max for r in msg.ranges]
+    # def scan_callback(self, msg):
+        # self.obstacles = [r if not math.isinf(r) and not math.isnan(r) and msg.range_min < r < msg.range_max else msg.range_max for r in msg.ranges]
     
+    def scan_callback(self, msg):
+        self.obstacles = [r if not math.isinf(r) and not math.isnan(r) and msg.range_min < r < msg.range_max 
+                      else msg.range_max for r in msg.ranges]
+
+        if not self.obstacles:
+            self.obstacles = []  
+
     def camera_callback(self, msg):
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
@@ -128,7 +135,7 @@ class TurtleBotEnv(Node, gym.Env):
         done = False
         if obstacle_detected:
             reward -= 100
-            done = False
+            done = True
         elif distance < 0.2:
             reward += 120 
             done = True
@@ -160,8 +167,8 @@ class TurtleBotEnv(Node, gym.Env):
             self.get_logger().warn('Gazebo reset service not available!')
 
     # Сбросить внутренние переменные
-        self.current_x = 0.0
-        self.current_y = 0.0
+        self.current_x = -2.0
+        self.current_y = -0.5
         self.current_yaw = 0.0
         self.steps = 0
         self.prev_distance = None
