@@ -24,14 +24,19 @@ class TurtleBotEnv(Node, gym.Env):
         self.bridge = CvBridge()
         self.camera_obstacle_detected = False
         
-        self.target_x = 5.0
-        self.target_y = 1.0
+        self.target_x = -2.0
+        self.target_y = -6.0
+        self.goal = [self.target_x, self.target_y]
         
+        self.x_range = [-10,10]
+        self.y_range = [-10,10]
+
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_yaw = 0.0
         self.obstacles = []
         self.prev_distance = None
+        self.past_distance = 0
         self.max_steps = 5000
         self.steps = 0 
         
@@ -53,29 +58,49 @@ class TurtleBotEnv(Node, gym.Env):
         cosy_cosp = 1.0 - 2.0 * (orientation_q.y * orientation_q.y + orientation_q.z * orientation_q.z)
         self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
 
+    # def scan_callback(self, msg):
+        # self.obstacles = [r if not math.isinf(r) and not math.isnan(r) and msg.range_min < r < msg.range_max else msg.range_max for r in msg.ranges]
+    
     def scan_callback(self, msg):
         self.obstacles = [r if not math.isinf(r) and not math.isnan(r) and msg.range_min < r < msg.range_max 
                       else msg.range_max for r in msg.ranges]
 
         if not self.obstacles:
-            self.obstacles = [msg.range_max]  
-    
+            self.obstacles = []  
+
     def camera_callback(self, msg):
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-            # Преобразование в оттенки серого
-            gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-            # Применение пороговой бинаризации к изображению.
-            _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-            # Подсчет белых пикселей
-            non_zero_pixels = cv2.countNonZero(thresh)
-            self.camera_obstacle_detected = non_zero_pixels > 1000
-
+            if cv_image is not None:
+                self.camera_obstacle_detected = self.process_camera_image(cv_image)
+            else:
+                self.camera_obstacle_detected = False
+            # print(self.camera_obstacle_detected)
         except Exception as e:
             self.get_logger().error(f"Error processing image: {e}")
             self.camera_obstacle_detected = False
 
- 
+    def process_camera_image(self, cv_image):
+   
+        # Преобразование изображения в формат для обработки
+        pixel_values = cv_image.reshape((-1, 3))  # Преобразование в список пикселей
+        pixel_values = np.float32(pixel_values)
+
+        # Применение K-means
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+        k = 2  # Количество кластеров (фон и препятствие)
+        _, labels, centers = cv2.kmeans(pixel_values, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+
+        # Преобразование обратно в изображение
+        centers = np.uint8(centers)
+        segmented_image = centers[labels.flatten()]
+        segmented_image = segmented_image.reshape(cv_image.shape)
+
+        # Анализ кластеров
+        obstacle_detected = np.count_nonzero(labels == 1) > 210000 # Если пикселей кластеров > чего-то, то препятствие обнаружено
+        # print(obstacle_detected)
+        return obstacle_detected
+    
     def step(self, action):
         cmd_msg = Twist()
         if action == 0:
@@ -88,37 +113,39 @@ class TurtleBotEnv(Node, gym.Env):
         rclpy.spin_once(self, timeout_sec=0.1) 
         self.publisher_.publish(cmd_msg)
     
-    
         self.steps += 1
         
+        # print(self.obstacles)
         distance = math.sqrt((self.target_x - self.current_x) ** 2 + (self.target_y - self.current_y) ** 2)
         angle_to_goal = math.atan2(self.target_y - self.current_y, self.target_x - self.current_x)
         angle_diff = (angle_to_goal - self.current_yaw + np.pi) % (2 * np.pi) - np.pi
 
         min_obstacle_dist = min(self.obstacles) if self.obstacles else float('inf')
-        obstacle_detected = (min_obstacle_dist < 0.2 and self.camera_obstacle_detected)
+        obstacle_detected = (min_obstacle_dist < 0.5 and self.camera_obstacle_detected)
         state = np.array([self.current_x, self.current_y, angle_diff, min_obstacle_dist])
 
+        distance_rate = (self.past_distance - distance)
         # print(min_obstacle_dist)
-        reward = -distance
-        if self.prev_distance is not None:
-            reward += 10 if distance < self.prev_distance else -10
-        self.prev_distance = distance
+        reward = 500.0 * distance_rate
+        self.past_distance = distance
+        # if self.prev_distance is not None:
+        #     reward += 10 if distance < self.prev_distance else -10
+        # self.prev_distance = distance
 
         done = False
         if obstacle_detected:
-            reward -= 50
+            reward -= 100
             done = False
         elif distance < 0.2:
-            reward += 1000
+            reward += 120 
             done = True
         elif self.steps >= self.max_steps:
-            reward -= 50
+            reward -= 150
             done = True
         else:
             done = False
         
-        reward = reward / 1000.0 
+        # reward = reward / 100.0 
         # print(state)
 
         return state, reward, done, {}
@@ -140,16 +167,15 @@ class TurtleBotEnv(Node, gym.Env):
             self.get_logger().warn('Gazebo reset service not available!')
 
     # Сбросить внутренние переменные
-        self.current_x = 0.0
-        self.current_y = 0.0
+        self.current_x = -2.0
+        self.current_y = -0.5
         self.current_yaw = 0.0
         self.steps = 0
         self.prev_distance = None
-        self.obstacles = []
+        # self.obstacles = []
         self.camera_obstacle_detected = False
         return np.array([self.current_x, self.current_y, 0.0, 0.0])  
  
-
     def render(self, mode='human'):
         pass
 
