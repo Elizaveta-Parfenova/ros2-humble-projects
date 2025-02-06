@@ -6,11 +6,6 @@ import random
 import math
 import matplotlib.pyplot as plt
 
-def world_to_map(world_coords, resolution, origin):
-    x_world, y_world = world_coords
-    x_map = int((x_world - origin[0]) / resolution)
-    y_map = int((y_world - origin[1]) / resolution)
-    return (x_map, y_map)
 
 class ResBlock(tf.keras.Model):
     def __init__(self, input_dim, output_dim, n_neurons=512):
@@ -48,38 +43,9 @@ class ResBlock(tf.keras.Model):
             x = self.activation(x)
         return x
 
-def slam_to_grid_map(slam_map, threshold=50):
-    """
-    Преобразование карты SLAM в бинарную grid map.
-    Args:
-        slam_map (np.ndarray): Исходная карта от SLAM.
-        threshold (int): Порог для определения препятствий.
-    Returns:
-        np.ndarray: Бинарная grid map (0 - свободно, 1 - препятствие).
-    """
-    grid_map = np.where(slam_map < threshold, 1, 0)  # 1 - препятствия, 0 - свободно
-    num_obstacles = np.count_nonzero(grid_map == 1)
-
-    # print(num_obstacles)
-    
-    # # Визуализация grid_map
-    # plt.figure(figsize=(8, 8))
-    # plt.imshow(grid_map, cmap='gray')
-    # plt.title(f'Grid Map с порогом {threshold}')
-    # plt.axis('off')
-    # plt.show()
-    
-    return grid_map
 
 def compute_deviation_from_path(current_pos, optimal_path):
-    """
-    Вычисляем отклонение от ближайшей точки оптимального пути.
-    Args:
-        current_pos (tuple): Текущая позиция агента (x, y).
-        optimal_path (list): Список координат оптимального пути.
-    Returns:
-        float: Отклонение от пути.
-    """
+
     path_points = np.array(optimal_path)
     distances = np.linalg.norm(path_points - np.array(current_pos), axis=1)
     min_distance = np.min(distances)
@@ -87,15 +53,32 @@ def compute_deviation_from_path(current_pos, optimal_path):
 
 
 class ImprovedCritic(tf.keras.Model):
-    def __init__(self, state_dim, n_neurons=512):
+    def __init__(self, state_dim, grid_map, optimal_path, n_neurons=512):
         super(ImprovedCritic, self).__init__()
         # self.bn1 = layers.BatchNormalization()  
+        # Преобразуем grid_map в тензор
+        self.grid_map = (
+            tf.convert_to_tensor(grid_map, dtype=tf.float32)
+            if not isinstance(grid_map, tf.Tensor)
+            else grid_map
+        )
+
+        # Преобразуем optimal_path в тензор и разворачиваем в одномерный вектор
+        self.optimal_path = (
+            tf.convert_to_tensor(optimal_path, dtype=tf.float32)
+            if not isinstance(optimal_path, tf.Tensor)
+            else optimal_path
+        )
+        self.optimal_path = tf.reshape(self.optimal_path, [-1])  # Делаем 1D
+        
         self.rb1 = ResBlock(state_dim + 1, state_dim + 1, n_neurons)  # +1 для отклонения от пути
         self.rb2 = ResBlock((state_dim + 1) * 2, (state_dim + 1) * 2, n_neurons)
         self.dropout = layers.Dropout(rate=0.1)  
         self.out = layers.Dense(1, activation=None, kernel_initializer='he_uniform')
 
-    def call(self, obs, deviation_from_path, training=True):
+    def call(self, obs, deviation_from_path, collision_penalty=0, training=True):
+        obs_with_deviation = tf.concat([obs, [deviation_from_path + collision_penalty]], axis=-1)
+        
         if isinstance(obs, np.ndarray):
             obs = tf.convert_to_tensor(obs, dtype=tf.float32)
         if isinstance(deviation_from_path, (float, int)):
@@ -123,35 +106,29 @@ class ImprovedCritic(tf.keras.Model):
         output = self.out(x)
         return output
 
-    def eval_value(self, state, goal):
-        slam_map = cv2.imread('map.pgm', cv2.IMREAD_GRAYSCALE)
-        grid_map = slam_to_grid_map(slam_map)
-
-        map_resolution = 0.05
-        map_origin = (-7.52, -8.2,)
-        
-        # # print(grid_map)
-        # # print(state)
-
-        state_world = state[0][:2]  # Текущая позиция в мировых координатах
-        goal_world = goal  # Цель в мировых координатах
-
-        state_pixel = world_to_map(state_world, map_resolution, map_origin)
-        goal_pixel = world_to_map(goal_world, map_resolution, map_origin)
-
-        # print(state_pixel)
-        # print(goal_pixel)
-
-        rrt_star = RRTStar(state_pixel, goal_pixel, grid_map)
-        optimal_path = rrt_star.plan()
-        # print(optimal_path)
-
+    def eval_value(self, state):
+        # Вычисляем отклонение от оптимального пути
         state = state[0]
-        if optimal_path:
-            print("Найден оптимальный путь:",)
-            deviation = compute_deviation_from_path((state_pixel[0], state_pixel[1]), optimal_path)
-        else:
-            print("Оптимальный путь не найден")
-            deviation = 1e6
+        current_pos = (state[0], state[1])
+        deviation = compute_deviation_from_path(current_pos, self.optimal_path)
         
-        return self.call(state, deviation)
+        # Проверяем, есть ли столкновение
+        collision_penalty = 0
+        if self.is_near_obstacle(current_pos):
+            collision_penalty = 1e3  # Большой штраф за близость к препятствию
+
+        return self.call(state, deviation, collision_penalty)
+
+    def is_near_obstacle(self, point, safe_distance=2):
+        x, y = int(point[0]), int(point[1])
+        h, w = self.grid_map.shape
+
+        # Проверка области вокруг точки на наличие препятствий
+        x_min = max(0, x - safe_distance)
+        x_max = min(w, x + safe_distance)
+        y_min = max(0, y - safe_distance)
+        y_max = min(h, y + safe_distance)
+
+        area = self.grid_map[y_min:y_max, x_min:x_max]
+        return np.any(area == 1)
+    

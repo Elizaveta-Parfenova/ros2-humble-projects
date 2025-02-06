@@ -7,6 +7,71 @@ from my_turtlebot_package.turtlebot_env import TurtleBotEnv
 from my_turtlebot_package.actor_net import ImprovedActor
 from my_turtlebot_package.critic_net import ImprovedCritic
 from my_turtlebot_package.config import TARGET_X, TARGET_Y
+from my_turtlebot_package.rrt_star import RRTStar
+import cv2
+
+
+
+def slam_to_grid_map(slam_map, threshold=50):
+    """
+    Преобразование карты SLAM в бинарную grid map.
+    Args:def map_to_world(map_coords, resolution, origin):
+    x_map, y_map = map_coords
+    x_world = x_map * resolution + origin[0]
+    y_world = y_map * resolution + origin[1]
+    return (x_world, y_world)
+        slam_map (np.ndarray): Исходная карта от SLAM.
+        threshold (int): Порог для определения препятствий.
+    Returns:
+        np.ndarray: Бинарная grid map (0 - свободно, 1 - препятствие).
+    """
+    grid_map = np.where(slam_map < threshold, 1, 0)  # 1 - препятствия, 0 - свободно
+    num_obstacles = np.count_nonzero(grid_map == 1)
+
+    # print(num_obstacles)
+    
+    # # Визуализация grid_map
+    # plt.figure(figsize=(8, 8))
+    # plt.imshow(grid_map, cmap='gray')
+    # plt.title(f'Grid Map с порогом {threshold}')
+    # plt.axis('off')
+    # plt.show()
+    
+    return grid_map
+
+def world_to_map(world_coords, resolution, origin):
+    x_world, y_world = world_coords
+    x_map = int((x_world - origin[0]) / resolution)
+    y_map = int((y_world - origin[1]) / resolution)
+    return (x_map, y_map)
+
+def map_to_world(map_coords, resolution, origin):
+    x_map, y_map = map_coords
+    x_world = x_map * resolution + origin[0]
+    y_world = y_map * resolution + origin[1]
+    return (x_world, y_world)
+
+slam_map = cv2.imread('map.pgm', cv2.IMREAD_GRAYSCALE)
+grid_map = slam_to_grid_map(slam_map)
+
+def path(state, goal, map_resolution = 0.05, map_origin = (-7.52, -8.2,)):
+    
+    state_world = state # Текущая позиция в мировых координатах
+    goal_world = goal  # Цель в мировых координатах
+
+    state_pixel = world_to_map(state_world, map_resolution, map_origin)
+    goal_pixel = world_to_map(goal_world, map_resolution, map_origin)
+
+    # print(state_pixel)
+    # print(goal_pixel)
+
+    rrt_star = RRTStar(state_pixel, goal_pixel, grid_map)
+    optimal_path = rrt_star.plan()
+
+    # optimal_path = [map_to_world(p, map_resolution, map_origin) for p in optimal_path_grid]
+
+    # print(optimal_path)
+    return optimal_path
 
 # --- Класс агента PPO ---
 class PPOAgent:
@@ -15,6 +80,7 @@ class PPOAgent:
         self.state_dim = env.observation_space.shape[0]
         self.action_dim = env.action_space.n
 
+        self.state_pose = [-2.0, -0.5]
         self.goal = np.array(env.goal, dtype=np.float32)
         # print(self.goal)
  
@@ -31,9 +97,11 @@ class PPOAgent:
         self.critic_lr = 0.0003
         self.gaelam = 0.95
 
+        self.optimal_path = path(self.state_pose, self.goal)
+
         # Модели
         self.actor = ImprovedActor(self.state_dim, self.action_dim)
-        self.critic = ImprovedCritic(self.state_dim)
+        self.critic = ImprovedCritic(self.state_dim, grid_map=grid_map, optimal_path=self.optimal_path)
 
         # Оптимизаторы
         self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=self.actor_lr)
@@ -114,7 +182,7 @@ class PPOAgent:
 
         with tf.GradientTape() as tape:
             # Получаем значения из критика
-            values = tf.squeeze(self.critic.eval_value(states, (TARGET_X, TARGET_Y)))
+            values = tf.squeeze(self.critic.eval_value(states))
             # print(values)
             # Рассчитываем потерю критика
             critic_loss = tf.keras.losses.Huber()(returns, values)
@@ -145,8 +213,8 @@ class PPOAgent:
                 # print(next_state)
                 # print(self.goal)
                 # print(self.obstacles)
-                value = self.critic.eval_value(state, (TARGET_X, TARGET_Y))[0, 0]
-                # print(value)
+                value = self.critic.eval_value(state)[0, 0]
+                print(value)
 
                 states.append(state)
                 actions.append(action)
@@ -160,7 +228,7 @@ class PPOAgent:
                 # print(episode_reward)
                 
                 # if len(states) >= batch_size:
-            next_value = self.critic.eval_value(next_state, (TARGET_X, TARGET_Y))[0, 0]
+            next_value = self.critic.eval_value(next_state)[0, 0]
             values.append(next_value)
             # print(values)
             advantages, returns = self.compute_advantages(rewards, values, dones)
